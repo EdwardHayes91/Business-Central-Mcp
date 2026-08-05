@@ -1,0 +1,137 @@
+import { z } from 'zod';
+
+// MCP delivers params as strings or typed values — coerce everything.
+// Note: .transform() breaks z.toJSONSchema(), so we keep a separate
+// JSON-schema-safe version (StringOrNumberInput) for schema generation.
+const StringOrNumber = z.union([z.string(), z.number()]).transform(v => String(v).trim());
+const StringOrNumberInput = z.union([z.string(), z.number()]);
+// Object IDs must be purely numeric — non-numeric values produce opaque BC
+// failures, and characters like `&` could inject extra OpenForm query params.
+const NumericId = StringOrNumber.refine(v => /^\d+$/.test(v), 'must be a numeric id');
+
+export const OpenPageSchema = z.object({
+  pageId: NumericId.describe('Numeric BC page ID (e.g., 22 for Customer List, 21 for Customer Card). Use bc_search_pages to find IDs.'),
+  bookmark: z.string().optional().describe('Open the page to a specific record. Bookmarks come from list row results in bc_open_page or bc_read_data.'),
+  tenantId: z.string().optional().describe('BC tenant ID. Defaults to the server-configured tenant. Only needed in multi-tenant deployments.'),
+});
+
+export const ReadDataSchema = z.object({
+  pageContextId: z.string().min(1).describe('Page context ID returned by bc_open_page.'),
+  section: z.string().optional().describe('sectionId to refresh. Defaults to "header". Examples: "lines" (document line items), "factbox:Customer Statistics" (FactBox). Listed in the bc_open_page sections array.'),
+  tab: z.string().optional().describe('Tab name to filter header fields by (e.g., "General", "Invoice Details", "Shipping and Billing"). Omit to return all header fields.'),
+  clearFilters: z.boolean().optional().describe('Clears agent-applied filters and restores the page to its default/native filtered state. Page-defined SourceTableView filters (set in AL code) remain active — this is NOT a guaranteed blank filter set. Use before applying new filters to avoid stacking. Applies to list-shape sections only.'),
+  filters: z.array(z.object({
+    column: z.string().describe('Column caption name to filter on (e.g., "City", "No.").'),
+    value: z.string().describe('Filter value. Supports exact match ("London"), ranges ("10000..20000"), wildcards ("*consulting*"), expressions (">1000").'),
+  })).optional().describe('Server-side filters to apply before reading. Multiple filters combine with AND logic.'),
+  sort: z.object({
+    column: z.string().describe('Column caption name to sort by (e.g., "Name", "No."). Must match a repeater column on the section.'),
+    direction: z.enum(['asc', 'desc']).describe('"asc" for ascending (A-Z, 0-9), "desc" for descending (Z-A, 9-0).'),
+  }).optional().describe('Sort the repeater by a column before reading. Applied after filters, resets BC viewport to top of sorted result. Applies to list-shape sections only. Non-sortable columns (FlowFields, BLOBs) may be rejected by BC.'),
+  columns: z.array(z.string()).optional().describe('Column caption names to include in results. Omit to return all columns. Reduces output size.'),
+  range: z.object({
+    offset: z.number().int().min(0).describe('0-based starting row index.'),
+    limit: z.number().int().min(1).describe('Maximum number of rows to return.'),
+  }).optional().describe('Slice a subset of repeater rows. Returns rows[offset..offset+limit]. Use with totalRowCount for pagination.'),
+});
+
+export const WriteDataSchema = z.object({
+  pageContextId: z.string().min(1).describe('Page context ID returned by bc_open_page.'),
+  fields: z.record(z.string(), z.string()).refine(f => Object.keys(f).length > 0, { message: 'fields must contain at least one field to write' }).describe('Key-value pairs of field caption names and string values to write (e.g., { "Name": "Contoso", "City": "London" }).'),
+  section: z.string().optional().describe('Section to write to (e.g., "lines" for document line items). Omit for header fields.'),
+  rowIndex: z.number().int().min(0).optional().describe('0-based row position in the repeater to write to. Use for line items. Prefer bookmark for stability.'),
+  bookmark: z.string().optional().describe('Stable row identifier from bc_read_data results. Preferred over rowIndex when rows may be reordered.'),
+  expectedStateVersion: z.number().optional().describe('Opt-in staleness guard. Pass the stateVersion from a prior bc_read_data or bc_open_page response. If the page state has changed since that read (async events or sibling writes mutated it), the call is rejected immediately with code STALE_CONTEXT before touching BC. Omit to skip the check.'),
+});
+
+export const ExecuteActionSchema = z.object({
+  pageContextId: z.string().min(1).describe('Page context ID returned by bc_open_page.'),
+  action: z.string().min(1).optional().describe('Action caption name to execute (case-insensitive). Use action OR cue, not both. Must match a visible, enabled action from bc_open_page response.'),
+  cue: z.string().min(1).optional().describe('Cue tile name to drill down on (e.g. "Sales Quotes", "Pending Approvals"). Use with section pointing at the subpage that owns the cuegroup. Use action OR cue, not both.'),
+  section: z.string().optional().describe('Section context. Required when using cue; optional for action. Examples: "lines", "subpage:Activities".'),
+  rowIndex: z.number().int().min(0).optional().describe('0-based row position for row-scoped actions.'),
+  bookmark: z.string().optional().describe('Stable row identifier for row-scoped actions.'),
+  expectedStateVersion: z.number().optional().describe('Opt-in staleness guard. Pass the stateVersion from a prior bc_read_data or bc_open_page response. If the page state has changed since that read (async events or sibling writes mutated it), the call is rejected immediately with code STALE_CONTEXT before touching BC. Omit to skip the check.'),
+}).refine(d => !!d.action !== !!d.cue, { message: 'Provide exactly one of: action, cue' });
+
+export const ClosePageSchema = z.object({
+  pageContextId: z.string().min(1).describe('Page context ID returned by bc_open_page. Becomes invalid after closing.'),
+});
+
+export const SearchPagesSchema = z.object({
+  query: z.string().min(1).describe('Search term matching BC page names and keywords (e.g., "customer", "sales order", "chart of accounts"). Fuzzy matching supported.'),
+});
+
+export const NavigateSchema = z.object({
+  pageContextId: z.string().min(1).describe('Page context ID of the List or Document page containing the row to navigate to.'),
+  bookmark: z.string().min(1).describe('Row bookmark from bc_open_page or bc_read_data results identifying which record to navigate to.'),
+  action: z.enum(['drill_down', 'select']).optional().describe('"select" moves cursor to row (default). "drill_down" opens the record detail page (returns new pageContextId). For field lookups use the bc_lookup tool.'),
+  section: z.string().optional().describe('Section containing the row (e.g., "lines" for document line items). Omit for header/default repeater.'),
+});
+
+export const RespondDialogSchema = z.object({
+  pageContextId: z.string().min(1).describe('Page context ID of the page that triggered the dialog.'),
+  dialogFormId: z.string().min(1).describe('Dialog form ID from the dialogsOpened array returned by bc_execute_action or bc_write_data, or requestPage.formId returned by bc_run_report.'),
+  response: z.enum(['ok', 'cancel', 'yes', 'no', 'abort', 'close']).describe('"ok" confirms, "cancel" dismisses, "yes"/"no" answers a question, "abort" force-closes, "close" closes a modal info page.'),
+});
+
+export const SwitchCompanySchema = z.object({
+  companyName: z.string().min(1).describe('Exact company name to switch to. Use bc_list_companies to see available company names.'),
+});
+
+const FORMAT_DESCRIBE = 'Rendered output format to capture via the BC "Send to..." flow. "pdf" captures a PDF (BC default); "excel" captures Excel (prefers "data only" layout); "word" captures a Word document. Format availability depends on the report\'s installed layouts -- reports without the requested layout return an error listing available formats. Omit to open the request page only without executing.';
+
+export const RunReportSchema = z.object({
+  reportId: NumericId.describe('Numeric BC report ID to execute (e.g., 1306 for Customer Statement, 6 for Trial Balance).'),
+  format: z.enum(['pdf', 'excel', 'word']).optional().describe(FORMAT_DESCRIBE),
+});
+
+export const ListCompaniesSchema = z.object({});
+
+export const WizardNavigateSchema = z.object({
+  pageContextId: z.string().min(1).describe('Page context ID returned by bc_open_page for a NavigatePage / wizard.'),
+  action: z.enum(['back', 'next', 'finish', 'cancel']).describe('Wizard step navigation. "next" advances, "back" returns to previous step, "finish" completes the wizard, "cancel" aborts.'),
+});
+
+export const LookupSchema = z.object({
+  pageContextId: z.string().min(1).describe('Page context ID of the open page (card or list) returned by bc_open_page.'),
+  field: z.string().min(1).describe('Caption of the field to enumerate lookup candidates for (e.g., "Salesperson Code", "Gen. Bus. Posting Group"). Must be an editable FK/related-table field that has a lookup (isLookup=true in bc_open_page or bc_read_data response).'),
+  search: z.string().optional().describe('Optional search string to filter candidates (e.g., "AR" to narrow to codes starting with AR). Applied via BC\'s native search on the lookup list. Omit to return all rows up to maxRows.'),
+  maxRows: z.number().int().min(1).max(500).optional().describe('Maximum number of candidate rows to return. Defaults to 50. Max 500. BC may return fewer if the table has fewer records.'),
+});
+
+export const QuerySchema = z.object({
+  entity: z.string().min(1).regex(/^[a-zA-Z][a-zA-Z0-9_]*$/, 'Entity must be a valid API identifier, e.g. "salesOrders", "items"').describe('BC Standard API v2.0 entity name (camelCase). Examples: customers, vendors, items, salesOrders, salesInvoices, purchaseOrders, generalLedgerEntries, accounts, companies, employees. See BC Standard API docs for the full list.'),
+  filter: z.string().optional().describe('OData $filter expression for server-side filtering. Examples: "city eq \'London\'", "amount gt 1000", "postingDate ge 2024-01-01 and postingDate le 2024-12-31", "contains(displayName, \'Contoso\')". Applied by BC before returning data.'),
+  select: z.string().optional().describe('Comma-separated OData $select field names to limit response size. Examples: "number,displayName,city", "id,amount,postingDate". Omit to return all fields.'),
+  top: z.number().int().min(1).optional().describe('Maximum number of rows to return. Defaults to 100 if omitted to prevent accidental full-table scans. Pass explicitly to get more rows.'),
+  orderby: z.string().optional().describe('OData $orderby expression. Examples: "displayName asc", "postingDate desc", "amount desc,number asc".'),
+  expand: z.string().optional().describe('OData $expand for related entities. Examples: "salesLines", "customer($select=displayName)". Use sparingly — expanded entities increase response size significantly.'),
+  company: z.string().optional().describe('Override the BC company name for this query. Defaults to the server-configured company (BC_ODATA_COMPANY or first available company). Use when querying a specific company in a multi-company BC environment.'),
+});
+
+/**
+ * Generate MCP-compatible JSON schema from a Zod schema.
+ * Handles the OpenPageSchema specially since it uses .transform() which
+ * z.toJSONSchema() cannot represent. All other schemas pass through directly.
+ */
+export function toMcpJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  // OpenPageSchema uses StringOrNumber with .transform() — use the safe variant
+  if (schema === OpenPageSchema) {
+    const safe = z.object({
+      pageId: StringOrNumberInput.describe('Numeric BC page ID (e.g., 22 for Customer List, 21 for Customer Card). Use bc_search_pages to find IDs.'),
+      bookmark: z.string().optional().describe('Open the page to a specific record. Bookmarks come from list row results in bc_open_page or bc_read_data.'),
+      tenantId: z.string().optional().describe('BC tenant ID. Defaults to the server-configured tenant. Only needed in multi-tenant deployments.'),
+    });
+    return z.toJSONSchema(safe) as Record<string, unknown>;
+  }
+  // RunReportSchema uses StringOrNumber with .transform() — use the safe variant
+  if (schema === RunReportSchema) {
+    const safe = z.object({
+      reportId: StringOrNumberInput.describe('Numeric BC report ID to execute (e.g., 1306 for Customer Statement, 6 for Trial Balance).'),
+      format: z.enum(['pdf', 'excel', 'word']).optional().describe(FORMAT_DESCRIBE),
+    });
+    return z.toJSONSchema(safe) as Record<string, unknown>;
+  }
+  return z.toJSONSchema(schema) as Record<string, unknown>;
+}

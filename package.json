@@ -1,0 +1,67 @@
+{
+  "name": "business-central-mcp",
+  "version": "1.4.0",
+  "description": "MCP server for Microsoft Dynamics 365 Business Central -- speaks BC's native WebSocket protocol directly",
+  "main": "dist/server.js",
+  "type": "module",
+  "bin": {
+    "business-central-mcp": "dist/stdio-server.js"
+  },
+  "files": [
+    "dist/"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:protocol": "vitest run tests/protocol",
+    "test:integration": "vitest run --config vitest.integration.config.ts tests/integration",
+    "test:watch": "vitest",
+    "start": "tsx src/server.ts",
+    "start:stdio": "tsx src/stdio-adapter.ts",
+    "start:stdio-direct": "tsx src/stdio-server.ts",
+    "prepublishOnly": "tsc --noEmit && npm run clean && tsc",
+    "validate:dxt": "npx -y @anthropic-ai/dxt validate manifest.json",
+    "build:dxt": "tsx scripts/build-dxt.ts"
+  },
+  "keywords": [
+    "mcp",
+    "business-central",
+    "dynamics-365",
+    "bc",
+    "erp",
+    "model-context-protocol",
+    "claude",
+    "ai"
+  ],
+  "author": "Torben Leth",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SShadowS/business-central-mcp"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "uuid": "^13.0.0",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6",
+    "zod-to-json-schema": "^3.25.2"
+  },
+  "devDependencies": {
+    "@types/archiver": "^7.0.0",
+    "@types/node": "^25.5.2",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.2",
+    "archiver": "^7.0.1",
+    "dotenv": "^17.4.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  }
+}
